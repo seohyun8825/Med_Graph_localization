@@ -8,12 +8,12 @@ astunparse==1.6.3
 async-timeout==4.0.2
 attrs==24.2.0
 av==12.3.0
-awscli @ file:///D:/bld/awscli_1724827685462/work
-awscrt @ file:///D:/bld/awscrt_1724727232552/work
+awscli
+awscrt
 beautifulsoup4==4.11.2
 boto3==1.26.36
 botocore==1.29.36
-Brotli @ file:///D:/bld/brotli-split_1695989908365/work
+Brotli
 brotlipy==0.7.0
 cachetools==5.5.0
 certifi==2020.12.5
@@ -21,7 +21,7 @@ cffi==1.14.5
 chardet==4.0.0
 charset-normalizer==2.1.1
 click==7.1.2
-colorama @ file:///home/conda/feedstock_root/build_artifacts/colorama_1666700638685/work
+colorama
 configparser==7.1.0
 contourpy==1.1.1
 coverage==5.5
@@ -29,10 +29,10 @@ cryptography==40.0.1
 cycler==0.11.0
 decorator==4.4.2
 decord==0.6.0
-distro @ file:///home/conda/feedstock_root/build_artifacts/distro_1675116244235/work
+distro
 docker-pycreds==0.4.0
 docopt==0.6.2
-docutils @ file:///D:/bld/docutils_1666755006414/work
+docutils
 dominate==2.6.0
 ego4d==1.2.5
 einops==0.4.1
@@ -60,7 +60,7 @@ imageio-ffmpeg==0.4.3
 importlib-metadata==3.10.0
 importlib_resources==6.4.5
 Jinja2==3.1.4
-jmespath @ file:///home/conda/feedstock_root/build_artifacts/jmespath_1655568249366/work
+jmespath
 joblib==0.17.0
 keras==2.10.0
 Keras-Applications==1.0.8
@@ -90,18 +90,18 @@ pipreqs==0.4.11
 prettytable==3.4.0
 proglog==0.1.10
 promise==2.3
-prompt-toolkit @ file:///home/conda/feedstock_root/build_artifacts/prompt-toolkit_1677600924538/work
+prompt-toolkit
 protobuf==3.15.8
 psutil==5.8.0
 pyasn1==0.6.1
 pyasn1_modules==0.4.1
-pycparser @ file:///home/conda/feedstock_root/build_artifacts/pycparser_1711811537435/work
+pycparser
 pycryptodomex==3.21.0
 pymongo==4.2.0
-pyOpenSSL @ file:///home/conda/feedstock_root/build_artifacts/pyopenssl_1680037383858/work
+pyOpenSSL
 pyparsing==3.0.9
-PySocks @ file:///D:/bld/pysocks_1661604991356/work
-python-dateutil @ file:///home/conda/feedstock_root/build_artifacts/python-dateutil_1626286286081/work
+PySocks
+python-dateutil
 python-dotenv==1.0.1
 pytube==15.0.0
 pytube3==9.6.4
@@ -111,8 +111,8 @@ regex==2024.11.6
 requests==2.32.3
 requests-oauthlib==2.0.0
 rsa==4.9
-ruamel.yaml @ file:///D:/bld/ruamel.yaml_1678273292945/work
-ruamel.yaml.clib @ file:///D:/bld/ruamel.yaml.clib_1695997028113/work
+ruamel.yaml
+ruamel.yaml.clib
 s3transfer==0.6.0
 sacremoses==0.0.53
 safetensors==0.4.5
@@ -150,10 +150,10 @@ typing_extensions==4.12.2
 tzdata==2024.2
 urllib3==1.26.20
 wandb==0.12.6
-wcwidth @ file:///home/conda/feedstock_root/build_artifacts/wcwidth_1704731205417/work
+wcwidth
 websockets==13.1
 Werkzeug==1.0.1
-win_inet_pton @ file:///D:/bld/win_inet_pton_1727796272493/work
+win_inet_pton
 wrapt==1.17.0
 yacs==0.1.8
 yarg==0.1.10
