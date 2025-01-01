@@ -43,7 +43,7 @@ class VSLNet(nn.Module):
 
         self.graph_layers = nn.ModuleList([
             TransformerConv(configs.dim, configs.dim // configs.num_heads, heads=configs.num_heads)
-            for _ in range(4)
+            for _ in range(5)
         ])
 
         self.positional_encoding = nn.Embedding(configs.max_pos_len, configs.dim)
@@ -52,17 +52,29 @@ class VSLNet(nn.Module):
         self.end_predictor = nn.Linear(configs.dim, 1)
         self.predictor = ConditionedPredictor(dim=configs.dim, num_heads=configs.num_heads, drop_rate=configs.drop_rate,
                                               max_pos_len=configs.max_pos_len, predictor=configs.predictor)
-
-
     def forward(self, word_ids, char_ids, video_features, v_mask, q_mask):
         device = video_features.device
+        
         # Project video and query features
         video_features = self.video_proj(video_features) 
         video_features = self.feature_encoder(video_features, mask=v_mask)
         query_features = self.embedding_net(word_ids, char_ids)  # (batch_size, seq_len, dim)
         query_features = self.feature_encoder(query_features, mask=q_mask)
         query_features = query_features.mean(dim=1)  # (batch_size, dim)
+        
+        # 변화율 계산
+        gradients = torch.norm(video_features[:, 1:] - video_features[:, :-1], dim=-1)  # (batch_size, seq_len-1)
+        gradient_weights = torch.cat([torch.zeros_like(gradients[:, :1]), gradients], dim=1)  # (batch_size, seq_len)
+        gradient_weights = gradient_weights.unsqueeze(-1)  # (batch_size, seq_len, 1)
+        
+        # 변화율 정규화 및 스케일링
+        mean, std = gradient_weights.mean(), gradient_weights.std()
+        gradient_weights = (gradient_weights - mean) / (std + 1e-6)  # 정규화
+        gradient_weights = torch.sigmoid(gradient_weights)  # [0, 1]로 조정
+        gradient_weights = gradient_weights * 2.0  # 스케일링
 
+        # 변화율 기반 가중치 적용
+        video_features = video_features * (1 + gradient_weights)
 
         # Ensure dimensions match
         query_node = query_features.unsqueeze(1)  # (batch_size, 1, dim)
@@ -91,7 +103,22 @@ class VSLNet(nn.Module):
         start_logits = self.start_predictor(all_nodes[:, 1:]).squeeze(-1)  # Exclude query node
         end_logits = self.end_predictor(all_nodes[:, 1:]).squeeze(-1)  # Exclude query node
         
+        # logits 값의 범위를 데이터셋 길이 내로 조정
+        #start_logits = torch.clamp(start_logits, min=-10, max=10)  # 학습 안정성 확보
+        #end_logits = torch.clamp(end_logits, min=-10, max=10)
+
+        # 디버깅 출력
+        print("Gradient Weights - Min:", gradient_weights.min().item(), 
+            "Max:", gradient_weights.max().item())
+        print("Start Logits - Min:", start_logits.min().item(), 
+            "Max:", start_logits.max().item())
+        print("End Logits - Min:", end_logits.min().item(), 
+            "Max:", end_logits.max().item())
+
         return start_logits, end_logits
+
+
+
 
     def expand_edge_index_for_batch(self, edge_index, batch_size, num_nodes):
         """
