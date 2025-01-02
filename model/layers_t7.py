@@ -205,59 +205,8 @@ class FeatureEncoder(nn.Module):
         return features
 
 
-class DynamicRNN(nn.Module):
-    def __init__(self, dim):
-        super(DynamicRNN, self).__init__()
-        self.lstm = nn.LSTM(input_size=dim, hidden_size=dim, num_layers=1, bias=True, batch_first=True,
-                            bidirectional=False)
 
-    def forward(self, x, mask):
-        out, _ = self.lstm(x)  # (bsz, seq_len, dim)
-        mask = mask.type(torch.float32)
-        mask = mask.unsqueeze(2)
-        out = out * mask
-        return out
-
-
-class ConditionedPredictor(nn.Module):
-    def __init__(self, dim, num_heads, max_pos_len, drop_rate=0.0, predictor='rnn'):
-        super(ConditionedPredictor, self).__init__()
-        self.predictor = predictor
-        if predictor == 'rnn':
-            self.start_encoder = DynamicRNN(dim=dim)
-            self.end_encoder = DynamicRNN(dim=dim)
-        else:
-            self.encoder = FeatureEncoder(dim=dim, num_heads=num_heads, kernel_size=7, num_layers=4,
-                                          max_pos_len=max_pos_len, drop_rate=drop_rate)
-            self.start_layer_norm = nn.LayerNorm(dim, eps=1e-6)
-            self.end_layer_norm = nn.LayerNorm(dim, eps=1e-6)
-
-        self.start_block = nn.Sequential(
-            Conv1D(in_dim=2 * dim, out_dim=dim, kernel_size=1, stride=1, padding=0, bias=True),
-            nn.ReLU(),
-            Conv1D(in_dim=dim, out_dim=1, kernel_size=1, stride=1, padding=0, bias=True)
-        )
-        self.end_block = nn.Sequential(
-            Conv1D(in_dim=2 * dim, out_dim=dim, kernel_size=1, stride=1, padding=0, bias=True),
-            nn.ReLU(),
-            Conv1D(in_dim=dim, out_dim=1, kernel_size=1, stride=1, padding=0, bias=True)
-        )
-
-    def forward(self, x, mask):
-        if self.predictor == 'rnn':
-            start_features = self.start_encoder(x, mask)  # (batch_size, seq_len, dim)
-            end_features = self.end_encoder(start_features, mask)
-        else:
-            start_features = self.encoder(x, mask)
-            end_features = self.encoder(start_features, mask)
-            start_features = self.start_layer_norm(start_features)
-            end_features = self.end_layer_norm(end_features)
-        start_features = self.start_block(torch.cat([start_features, x], dim=2))  # (batch_size, seq_len, 1)
-        end_features = self.end_block(torch.cat([end_features, x], dim=2))
-        start_logits = mask_logits(start_features.squeeze(2), mask=mask)
-        end_logits = mask_logits(end_features.squeeze(2), mask=mask)
-        return start_logits, end_logits
-
+class LossUtils(nn.Module):
     @staticmethod
     def extract_index(start_logits, end_logits):
         start_prob = nn.Softmax(dim=1)(start_logits)
