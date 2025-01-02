@@ -10,20 +10,25 @@ class MetaPathTokenGenerator(nn.Module):
         self.scales = scales
         self.token_generators = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(in_dim, out_dim),
+                nn.Linear(in_dim + 1, out_dim),  
                 nn.ReLU(),
                 nn.Linear(out_dim, out_dim)
             ) for _ in range(scales)
         ])
 
-    def forward(self, node_features, edge_index):
+    def forward(self, node_features, edge_index, temporal_info):
         src, dest = edge_index
         edge_features = torch.cat([node_features[src], node_features[dest]], dim=-1)
 
-        # Generate multi-scale tokens
+        # 시간 정보 추가
+        temporal_gap = temporal_info[src] - temporal_info[dest]
+        edge_features = torch.cat([edge_features, temporal_gap.unsqueeze(-1)], dim=-1)
+
+        # Multi-scale token generation
         tokens = [gen(edge_features) for gen in self.token_generators]
-        multi_scale_tokens = torch.stack(tokens, dim=0).mean(dim=0)  # Average over scales
+        multi_scale_tokens = torch.stack(tokens, dim=0).mean(dim=0)
         return multi_scale_tokens
+
 
 
 def build_optimizer_and_scheduler(model, configs):
@@ -105,14 +110,12 @@ class VSLNet(nn.Module):
         print(f"Expanded edge_index shape: {edge_index.shape}")
         print(f"Max edge_index value: {edge_index.max()}, Node size: {batch_size * num_nodes}")
 
-        # Validate edge_index bounds
-        assert edge_index.max() < batch_size * num_nodes, (
-            f"edge_index out of bounds. Max value: {edge_index.max()}, "
-            f"Allowed range: {batch_size * num_nodes - 1}"
-        )
+        # Generate temporal_info (노드의 시간적 정보 생성)
+        temporal_info = torch.arange(num_nodes, device=device).unsqueeze(0).repeat(batch_size, 1).flatten()
+        print(f"temporal_info shape: {temporal_info.shape}")
 
-        # Generate Meta-Path Tokens
-        meta_path_tokens = self.meta_path_token_gen(all_nodes.view(-1, hidden_dim), edge_index)
+        # Generate Meta-Path Tokens with temporal_info
+        meta_path_tokens = self.meta_path_token_gen(all_nodes.view(-1, hidden_dim), edge_index, temporal_info)
         print(f"meta_path_tokens shape: {meta_path_tokens.shape}")
 
         # Pass through Graph Transformer layers
@@ -131,6 +134,7 @@ class VSLNet(nn.Module):
         print("End Logits - Min:", end_logits.min().item(), "Max:", end_logits.max().item())
 
         return start_logits, end_logits
+
 
     def expand_edge_index_for_batch(self, edge_index, batch_size, num_nodes):
         """

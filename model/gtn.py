@@ -218,6 +218,16 @@ class TransformerConv(MessagePassing):
 
         # Calculate attention weights
         alpha = (query_i * key_j).sum(dim=-1) / math.sqrt(self.head_dim)
+        print(f"alpha shape before temporal masking: {alpha.shape}")
+
+        if edge_attr is not None:
+            # Use reshape instead of view
+            temporal_weight = edge_attr[:, 0].reshape(-1, self.heads, 1)  # Adjust shape to match alpha
+            temporal_weight = temporal_weight[:alpha.size(0)]  # Ensure batch size alignment
+            print(f"temporal_weight shape after adjustment: {temporal_weight.shape}")
+            alpha = alpha * temporal_weight.squeeze(-1)
+            print(f"alpha shape after temporal masking: {alpha.shape}")
+
         alpha = softmax(alpha, index, ptr, size_i)
         self._alpha = alpha
         alpha = F.dropout(alpha, p=self.dropout, training=self.training)
@@ -235,7 +245,6 @@ class TransformerConv(MessagePassing):
         # Apply attention
         out = out * alpha.view(-1, self.heads, 1)
         return out
-
 
 
 
