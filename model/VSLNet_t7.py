@@ -15,6 +15,21 @@ def build_optimizer_and_scheduler(model, configs):
                                                 configs.num_train_steps)
     return optimizer, scheduler
 
+
+class BoundaryGraphPredictor(nn.Module):
+    def __init__(self, dim, num_heads):
+        super(BoundaryGraphPredictor, self).__init__()
+        self.node_updater = TransformerConv(dim, dim // num_heads, heads=num_heads)
+        self.boundary_proj = nn.Linear(dim, 2)  # Predict both start and end logits
+
+    def forward(self, nodes, edge_index):
+        # Update graph nodes
+        updated_nodes = self.node_updater(nodes, edge_index)
+        boundary_logits = self.boundary_proj(updated_nodes)  # (num_nodes, 2)
+        return boundary_logits[..., 0], boundary_logits[..., 1]  # start_logits, end_logits
+
+
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -52,7 +67,7 @@ class VSLNet(nn.Module):
         self.end_predictor = nn.Linear(configs.dim, 1)
         self.predictor = ConditionedPredictor(dim=configs.dim, num_heads=configs.num_heads, drop_rate=configs.drop_rate,
                                               max_pos_len=configs.max_pos_len, predictor=configs.predictor)
-
+        #self.boundary_predictor = BoundaryGraphPredictor(dim=configs.dim, num_heads=configs.num_heads)
 
     def forward(self, word_ids, char_ids, video_features, v_mask, q_mask):
         device = video_features.device
@@ -89,9 +104,12 @@ class VSLNet(nn.Module):
 
         # Predict start and end logits
         start_logits = self.start_predictor(all_nodes[:, 1:]).squeeze(-1)  # Exclude query node
-        end_logits = self.end_predictor(all_nodes[:, 1:]).squeeze(-1)  # Exclude query node
-        
+        end_logits = self.end_predictor(all_nodes[:, 1:]).squeeze(-1)  # Exclude query node 
+
+        #start_logits, end_logits = self.boundary_predictor(all_nodes[:, 1:], edge_index)  # Exclude query node
+
         return start_logits, end_logits
+
 
     def expand_edge_index_for_batch(self, edge_index, batch_size, num_nodes):
         """

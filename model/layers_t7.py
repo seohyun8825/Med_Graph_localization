@@ -243,36 +243,6 @@ class CQAttention(nn.Module):
         return res
 
 
-class WeightedPool(nn.Module):
-    def __init__(self, dim):
-        super(WeightedPool, self).__init__()
-        weight = torch.empty(dim, 1)
-        nn.init.xavier_uniform_(weight)
-        self.weight = nn.Parameter(weight, requires_grad=True)
-
-    def forward(self, x, mask):
-        alpha = torch.tensordot(x, self.weight, dims=1)  # shape = (batch_size, seq_length, 1)
-        alpha = mask_logits(alpha, mask=mask.unsqueeze(2))
-        alphas = nn.Softmax(dim=1)(alpha)
-        pooled_x = torch.matmul(x.transpose(1, 2), alphas)  # (batch_size, dim, 1)
-        pooled_x = pooled_x.squeeze(2)
-        return pooled_x
-
-
-class CQConcatenate(nn.Module):
-    def __init__(self, dim):
-        super(CQConcatenate, self).__init__()
-        self.weighted_pool = WeightedPool(dim=dim)
-        self.conv1d = Conv1D(in_dim=2 * dim, out_dim=dim, kernel_size=1, stride=1, padding=0, bias=True)
-
-    def forward(self, context, query, q_mask):
-        pooled_query = self.weighted_pool(query, q_mask)  # (batch_size, dim)
-        _, c_seq_len, _ = context.shape
-        pooled_query = pooled_query.unsqueeze(1).repeat(1, c_seq_len, 1)  # (batch_size, c_seq_len, dim)
-        output = torch.cat([context, pooled_query], dim=2)  # (batch_size, c_seq_len, 2*dim)
-        output = self.conv1d(output)
-        return output
-
 
 class HighLightLayer(nn.Module):
     def __init__(self, dim):
@@ -367,68 +337,4 @@ class ConditionedPredictor(nn.Module):
         start_loss = nn.CrossEntropyLoss(reduction='mean')(start_logits, start_labels)
         end_loss = nn.CrossEntropyLoss(reduction='mean')(end_logits, end_labels)
         return start_loss + end_loss
-import torch
-from torch_geometric.nn import GATConv, TransformerConv
-
-class GraphQueryPredictor(nn.Module):
-    def __init__(self, dim, num_heads, max_pos_len, drop_rate=0.0):
-        super(GraphQueryPredictor, self).__init__()
-        self.graph_layer = TransformerConv(dim, dim // num_heads, heads=num_heads)
-        self.query_proj = nn.Linear(dim, dim)
-        self.node_proj = nn.Linear(dim, dim)
-        self.positional_encoding = nn.Embedding(max_pos_len, dim)  # Positional Encoding
-        self.start_predictor = nn.Linear(dim, 1)
-        self.end_predictor = nn.Linear(dim, 1)
-
-    def forward(self, query_features, video_features, edge_index):
-        batch_size, num_segments, dim = video_features.size()
-        device = video_features.device
-
-        # Add Positional Encoding to Video Features
-        positions = torch.arange(num_segments, device=device).unsqueeze(0)  # (1, num_segments)
-        pos_encoding = self.positional_encoding(positions).expand(batch_size, -1, -1)  # (batch_size, num_segments, dim)
-        video_features = self.node_proj(video_features + pos_encoding)  # Add positional encoding
-
-        # Project Query Features
-        query_features = self.query_proj(query_features).unsqueeze(1)  # (batch_size, 1, dim)
-
-        # Concatenate Query and Video Features
-        all_nodes = torch.cat([query_features, video_features], dim=1)  # (batch_size, num_segments + 1, dim)
-
-        # Adjust Edge Index for Batch
-        edge_index = self.expand_edge_index_for_batch(edge_index, batch_size, all_nodes.size(1))
-
-        # Pass through Graph Layer
-        all_nodes = self.graph_layer(all_nodes.view(-1, dim), edge_index)  # Flatten batch nodes
-
-        # Reshape back to batch format
-        all_nodes = all_nodes.view(batch_size, num_segments + 1, dim)
-
-        # Predict Start and End
-        start_logits = self.start_predictor(all_nodes[:, 1:].reshape(-1, dim)).squeeze(-1)  # Exclude Query Node
-        end_logits = self.end_predictor(all_nodes[:, 1:].reshape(-1, dim)).squeeze(-1)
-
-        return start_logits, end_logits
-
-    def expand_edge_index_for_batch(self, edge_index, batch_size, num_nodes):
-        expanded_edges = []
-        for batch_idx in range(batch_size):
-            offset = batch_idx * num_nodes
-            expanded_edges.append(edge_index + offset)
-        return torch.cat(expanded_edges, dim=1)
-
-    @staticmethod
-    def extract_index(start_logits, end_logits):
-        start_prob = nn.Softmax(dim=1)(start_logits)
-        end_prob = nn.Softmax(dim=1)(end_logits)
-        outer = torch.matmul(start_prob.unsqueeze(dim=2), end_prob.unsqueeze(dim=1))
-        outer = torch.triu(outer, diagonal=0)
-        _, start_index = torch.max(torch.max(outer, dim=2)[0], dim=1)  # (batch_size, )
-        _, end_index = torch.max(torch.max(outer, dim=1)[0], dim=1)  # (batch_size, )
-        return start_index, end_index
-
-    @staticmethod
-    def compute_cross_entropy_loss(start_logits, end_logits, start_labels, end_labels):
-        start_loss = nn.CrossEntropyLoss(reduction='mean')(start_logits, start_labels)
-        end_loss = nn.CrossEntropyLoss(reduction='mean')(end_logits, end_labels)
-        return start_loss + end_loss
+    
