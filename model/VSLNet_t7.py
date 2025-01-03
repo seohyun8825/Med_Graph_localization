@@ -32,7 +32,11 @@ class AttentionChainPredictor(nn.Module):
         start_features, _ = self.start_attention(x, x, x, key_padding_mask=mask)
         start_logits = self.start_predictor(start_features).squeeze(-1)
 
-        end_features, _ = self.end_attention(start_features, x, x, key_padding_mask=mask)
+        # Weighting start features to guide end prediction
+        start_weights = torch.sigmoid(start_logits).unsqueeze(-1)  # Normalize logits
+        guided_features = start_weights * start_features
+
+        end_features, _ = self.end_attention(guided_features, x, x, key_padding_mask=mask)
         end_logits = self.end_predictor(end_features).squeeze(-1)
 
         # Mask logits
