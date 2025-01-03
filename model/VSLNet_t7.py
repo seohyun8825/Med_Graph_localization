@@ -15,20 +15,31 @@ def build_optimizer_and_scheduler(model, configs):
                                                 configs.num_train_steps)
     return optimizer, scheduler
 
+def mask_logits(inputs, mask, mask_value=-1e30):
+    mask = mask.type(torch.float32)
+    return inputs + (1.0 - mask) * mask_value
 
-class BoundaryGraphPredictor(nn.Module):
+class AttentionChainPredictor(nn.Module):
     def __init__(self, dim, num_heads):
-        super(BoundaryGraphPredictor, self).__init__()
-        self.node_updater = TransformerConv(dim, dim // num_heads, heads=num_heads)
-        self.boundary_proj = nn.Linear(dim, 2)  # Predict both start and end logits
+        super(AttentionChainPredictor, self).__init__()
+        self.start_attention = nn.MultiheadAttention(dim, num_heads, batch_first=True)
+        self.end_attention = nn.MultiheadAttention(dim, num_heads, batch_first=True)
 
-    def forward(self, nodes, edge_index):
-        # Update graph nodes
-        updated_nodes = self.node_updater(nodes, edge_index)
-        boundary_logits = self.boundary_proj(updated_nodes)  # (num_nodes, 2)
-        return boundary_logits[..., 0], boundary_logits[..., 1]  # start_logits, end_logits
+        self.start_predictor = nn.Linear(dim, 1)
+        self.end_predictor = nn.Linear(dim, 1)
 
+    def forward(self, x, mask):
+        start_features, _ = self.start_attention(x, x, x, key_padding_mask=mask)
+        start_logits = self.start_predictor(start_features).squeeze(-1)
 
+        end_features, _ = self.end_attention(start_features, x, x, key_padding_mask=mask)
+        end_logits = self.end_predictor(end_features).squeeze(-1)
+
+        # Mask logits
+        start_logits = mask_logits(start_logits, mask=mask)
+        end_logits = mask_logits(end_logits, mask=mask)
+
+        return start_logits, end_logits
 
 import torch
 import torch.nn as nn
@@ -67,7 +78,7 @@ class VSLNet(nn.Module):
         self.end_predictor = nn.Linear(configs.dim, 1)
         self.predictor = ConditionedPredictor(dim=configs.dim, num_heads=configs.num_heads, drop_rate=configs.drop_rate,
                                               max_pos_len=configs.max_pos_len, predictor=configs.predictor)
-        #self.boundary_predictor = BoundaryGraphPredictor(dim=configs.dim, num_heads=configs.num_heads)
+        self.attention_chain_predictor = AttentionChainPredictor(dim=configs.dim, num_heads=configs.num_heads)
 
     def forward(self, word_ids, char_ids, video_features, v_mask, q_mask):
         device = video_features.device
@@ -103,13 +114,12 @@ class VSLNet(nn.Module):
         all_nodes = all_nodes.view(batch_size, num_nodes, -1)
 
         # Predict start and end logits
-        start_logits = self.start_predictor(all_nodes[:, 1:]).squeeze(-1)  # Exclude query node
-        end_logits = self.end_predictor(all_nodes[:, 1:]).squeeze(-1)  # Exclude query node 
+        #start_logits = self.start_predictor(all_nodes[:, 1:]).squeeze(-1)  # Exclude query node
+        #end_logits = self.end_predictor(all_nodes[:, 1:]).squeeze(-1)  # Exclude query node 
+        start_logits, end_logits = self.attention_chain_predictor(all_nodes[:, 1:], v_mask)
 
-        #start_logits, end_logits = self.boundary_predictor(all_nodes[:, 1:], edge_index)  # Exclude query node
 
         return start_logits, end_logits
-
 
     def expand_edge_index_for_batch(self, edge_index, batch_size, num_nodes):
         """
