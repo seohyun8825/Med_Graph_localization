@@ -81,7 +81,9 @@ class VSLNet(nn.Module):
         query_features = self.embedding_net(word_ids, char_ids)
         query_features = self.feature_encoder(query_features, mask=q_mask).mean(dim=1)
         query_node = query_features.unsqueeze(1)  # (batch_size, 1, dim)
-
+        print(f"query_features shape: {query_features.shape}")
+        query_feature = query_node.squeeze(1)
+        print(f"query_feature shape: {query_feature.shape}")
         # Concatenate nodes and prepare for graph processing
         all_nodes = torch.cat([query_node, video_features], dim=1)  # (batch_size, num_segments + 1, dim)
         batch_size, num_nodes, hidden_dim = all_nodes.size()
@@ -95,7 +97,7 @@ class VSLNet(nn.Module):
 
         for layer_idx, layer in enumerate(self.graph_layers):
             all_nodes = all_nodes.view(-1, hidden_dim)  # Flatten for graph processing
-            all_nodes = layer(all_nodes, edge_index)  # Graph processing
+            all_nodes = layer(all_nodes, edge_index, query_feature=query_feature)  # Graph processing
             all_nodes = all_nodes.view(batch_size, num_nodes, hidden_dim)  # Restore batch shape
 
             #print(f"Graph Layer {layer_idx + 1} - all_nodes shape: {all_nodes.shape}")

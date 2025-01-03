@@ -129,6 +129,8 @@ class TransformerConv(MessagePassing):
         self.lin_key = Linear(in_channels[0], heads * out_channels)
         self.lin_query = Linear(in_channels[1], heads * out_channels)
         self.lin_value = Linear(in_channels[0], heads * out_channels)
+        self.lin_query_global = Linear(in_channels[1], heads * out_channels)  # Added for query feature
+
         if edge_dim is not None:
             self.lin_edge = Linear(edge_dim, heads * out_channels, bias=False)
         else:
@@ -155,6 +157,7 @@ class TransformerConv(MessagePassing):
         self.lin_key.reset_parameters()
         self.lin_query.reset_parameters()
         self.lin_value.reset_parameters()
+        self.lin_query_global.reset_parameters()
         if self.edge_dim:
             self.lin_edge.reset_parameters()
         self.lin_skip.reset_parameters()
@@ -196,6 +199,7 @@ class TransformerConv(MessagePassing):
         x: Union[Tensor, PairTensor],
         edge_index: Adj,
         edge_attr: OptTensor = None,
+        query_feature: Tensor = None,
         return_attention_weights: Optional[bool] = None,
     ) -> Union[
             Tensor,
@@ -223,7 +227,13 @@ class TransformerConv(MessagePassing):
         query = self.lin_query(x[1]).view(-1, H, C)
         key = self.lin_key(x[0]).view(-1, H, C)
         value = self.lin_value(x[0]).view(-1, H, C)
+        if query_feature is not None:
+            batch_size = query_feature.size(0)
+            num_nodes = x[0].size(0) // batch_size
+            query_global = self.lin_query_global(query_feature).view(batch_size, 1, H, C)
+            query_global = query_global.repeat(1, num_nodes, 1, 1).view(-1, H, C)
 
+            query = query + query_global 
         # propagate_type: (query: Tensor, key:Tensor, value: Tensor,
         #                  edge_attr: OptTensor)
         out = self.propagate(edge_index, query=query, key=key, value=value,
