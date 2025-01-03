@@ -3,6 +3,33 @@ import torch.nn as nn
 from model.layers_t7 import Embedding, VisualProjection, FeatureEncoder, ConditionedPredictor
 from transformers import AdamW, get_linear_schedule_with_warmup
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+#from torch_geometric.nn import GATConv, TransformerConv
+from model.gtf import TransformerConv
+class QueryGuidedAttention(nn.Module):
+    def __init__(self, dim, num_heads):
+        super(QueryGuidedAttention, self).__init__()
+        self.attention = nn.MultiheadAttention(dim, num_heads, batch_first=True)
+
+    def forward(self, query, nodes):
+        """
+        Args:
+            query: Query node (batch_size, 1, dim)
+            nodes: All nodes (batch_size, num_nodes, dim)
+        Returns:
+            Updated query node
+        """
+        # Ensure dimensions are consistent
+        query = query.squeeze(1)  # (batch_size, dim)
+        query = query.unsqueeze(1)  # (batch_size, 1, dim)
+
+        # Perform attention
+        query_updated, _ = self.attention(query, nodes, nodes)
+
+        return query_updated
+
 
 def build_optimizer_and_scheduler(model, configs):
     no_decay = ['bias', 'layer_norm', 'LayerNorm']  # no decay for parameters of layer norm and bias
@@ -19,43 +46,11 @@ def mask_logits(inputs, mask, mask_value=-1e30):
     mask = mask.type(torch.float32)
     return inputs + (1.0 - mask) * mask_value
 
-class AttentionChainPredictor(nn.Module):
-    def __init__(self, dim, num_heads):
-        super(AttentionChainPredictor, self).__init__()
-        self.start_attention = nn.MultiheadAttention(dim, num_heads, batch_first=True)
-        self.end_attention = nn.MultiheadAttention(dim, num_heads, batch_first=True)
-
-        self.start_predictor = nn.Linear(dim, 1)
-        self.end_predictor = nn.Linear(dim, 1)
-
-    def forward(self, x, mask):
-        start_features, _ = self.start_attention(x, x, x, key_padding_mask=mask)
-        start_logits = self.start_predictor(start_features).squeeze(-1)
-
-        # Weighting start features to guide end prediction
-        start_weights = torch.sigmoid(start_logits).unsqueeze(-1)  # Normalize logits
-        guided_features = start_weights * start_features
-
-        end_features, _ = self.end_attention(guided_features, x, x, key_padding_mask=mask)
-        end_logits = self.end_predictor(end_features).squeeze(-1)
-
-        # Mask logits
-        start_logits = mask_logits(start_logits, mask=mask)
-        end_logits = mask_logits(end_logits, mask=mask)
-
-        return start_logits, end_logits
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch_geometric.nn import GATConv, TransformerConv
-from torch_geometric.data import Data
 
 class VSLNet(nn.Module):
     def __init__(self, configs, word_vectors):
         super(VSLNet, self).__init__()
         self.configs = configs
-        # Embedding Layers
         self.embedding_net = Embedding(
             num_words=configs.word_size,
             num_chars=configs.char_size,
@@ -63,65 +58,55 @@ class VSLNet(nn.Module):
             word_dim=configs.word_dim,
             char_dim=configs.char_dim,
             word_vectors=word_vectors,
-            drop_rate=configs.drop_rate
+            drop_rate=configs.drop_rate,
         )
         self.video_proj = VisualProjection(configs.video_feature_dim, configs.dim)
-        self.feature_encoder = FeatureEncoder(dim=configs.dim, num_heads=configs.num_heads, kernel_size=7, num_layers=4,
-                                              max_pos_len=configs.max_pos_len, drop_rate=configs.drop_rate)
-
-        # Graph Transformer Layers
-
+        self.feature_encoder = FeatureEncoder(
+            dim=configs.dim, num_heads=configs.num_heads, kernel_size=7, num_layers=4,
+            max_pos_len=configs.max_pos_len, drop_rate=configs.drop_rate,
+        )
+        self.cross_attention = QueryGuidedAttention(dim=configs.dim, num_heads=configs.num_heads)
         self.graph_layers = nn.ModuleList([
             TransformerConv(configs.dim, configs.dim // configs.num_heads, heads=configs.num_heads)
             for _ in range(4)
         ])
-
-        self.positional_encoding = nn.Embedding(configs.max_pos_len, configs.dim)
-        # Start-End Time Prediction
         self.start_predictor = nn.Linear(configs.dim, 1)
         self.end_predictor = nn.Linear(configs.dim, 1)
-        self.predictor = ConditionedPredictor(dim=configs.dim, num_heads=configs.num_heads, drop_rate=configs.drop_rate,
-                                              max_pos_len=configs.max_pos_len, predictor=configs.predictor)
-        self.attention_chain_predictor = AttentionChainPredictor(dim=configs.dim, num_heads=configs.num_heads)
-
     def forward(self, word_ids, char_ids, video_features, v_mask, q_mask):
         device = video_features.device
-        # Project video and query features
-        video_features = self.video_proj(video_features) 
+
+        # Video and Query Feature Extraction
+        video_features = self.video_proj(video_features)
         video_features = self.feature_encoder(video_features, mask=v_mask)
-        query_features = self.embedding_net(word_ids, char_ids)  # (batch_size, seq_len, dim)
-        query_features = self.feature_encoder(query_features, mask=q_mask)
-        query_features = query_features.mean(dim=1)  # (batch_size, dim)
-
-
-        # Ensure dimensions match
+        query_features = self.embedding_net(word_ids, char_ids)
+        query_features = self.feature_encoder(query_features, mask=q_mask).mean(dim=1)
         query_node = query_features.unsqueeze(1)  # (batch_size, 1, dim)
-        
-        # Concatenate query and video features along the node dimension
+
+        # Concatenate nodes and prepare for graph processing
         all_nodes = torch.cat([query_node, video_features], dim=1)  # (batch_size, num_segments + 1, dim)
-
-        # Create edge index for graph (temporal and query edges)
-        edge_index = self.build_graph_edges(video_features.size(1)).to(all_nodes.device)  # Move to same device as nodes
-
-        # Reshape for graph processing
         batch_size, num_nodes, hidden_dim = all_nodes.size()
-        all_nodes = all_nodes.view(-1, hidden_dim)  # (batch_size * (num_segments + 1), dim)
 
-        # Adjust edge index for batching
+        # Prepare edge indices
+        edge_index = self.build_graph_edges(video_features.size(1)).to(all_nodes.device)
         edge_index = self.expand_edge_index_for_batch(edge_index, batch_size, num_nodes)
 
-        # Pass through Graph Transformer layers
-        for layer in self.graph_layers:
-            all_nodes = layer(all_nodes, edge_index)
+        #print(f"Initial all_nodes shape: {all_nodes.shape}") 
+        #print(f"Edge index shape: {edge_index.shape}")
 
-        # Reshape back to batch format
-        all_nodes = all_nodes.view(batch_size, num_nodes, -1)
+        for layer_idx, layer in enumerate(self.graph_layers):
+            all_nodes = all_nodes.view(-1, hidden_dim)  # Flatten for graph processing
+            all_nodes = layer(all_nodes, edge_index)  # Graph processing
+            all_nodes = all_nodes.view(batch_size, num_nodes, hidden_dim)  # Restore batch shape
 
-        # Predict start and end logits
-        #start_logits = self.start_predictor(all_nodes[:, 1:]).squeeze(-1)  # Exclude query node
-        #end_logits = self.end_predictor(all_nodes[:, 1:]).squeeze(-1)  # Exclude query node 
-        start_logits, end_logits = self.attention_chain_predictor(all_nodes[:, 1:], v_mask)
+            #print(f"Graph Layer {layer_idx + 1} - all_nodes shape: {all_nodes.shape}")
 
+            # Cross Attention with query node
+            #query_node = self.cross_attention(query_node, all_nodes)
+            #print(f"Query node shape after attention: {query_node.shape}")
+
+        # Prediction using start and end logits
+        start_logits = self.start_predictor(all_nodes[:, 1:]).squeeze(-1)  # Exclude query node
+        end_logits = self.end_predictor(all_nodes[:, 1:]).squeeze(-1)  # Exclude query node
 
         return start_logits, end_logits
 
@@ -164,8 +149,8 @@ class VSLNet(nn.Module):
 
 
     def extract_index(self, start_logits, end_logits):
-        return self.predictor.extract_index(start_logits=start_logits, end_logits=end_logits)
+        return ConditionedPredictor.extract_index(start_logits=start_logits, end_logits=end_logits)
 
     def compute_loss(self, start_logits, end_logits, start_labels, end_labels):
-        return self.predictor.compute_cross_entropy_loss(start_logits=start_logits, end_logits=end_logits,
+        return ConditionedPredictor.compute_cross_entropy_loss(start_logits=start_logits, end_logits=end_logits,
                                                          start_labels=start_labels, end_labels=end_labels)
